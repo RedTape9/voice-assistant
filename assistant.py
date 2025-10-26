@@ -1,12 +1,11 @@
 """
 LangChain agent with various tools for the voice assistant
 """
-from langchain.agents import AgentExecutor, create_openai_tools_agent
+from langgraph.prebuilt import create_react_agent
 from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.tools import StructuredTool
 from langchain_community.tools import WikipediaQueryRun
 from langchain_community.utilities import WikipediaAPIWrapper
-from langchain.tools import Tool
 from langchain_community.tools import DuckDuckGoSearchRun
 import datetime
 from config import MODEL_NAME, MODEL_TEMPERATURE
@@ -64,8 +63,8 @@ class Assistant:
         # Create tools
         self.tools = self._create_tools()
         
-        # Create the agent
-        self.agent = self._create_agent()
+        # Create the agent using LangGraph
+        self.agent = create_react_agent(self.llm, self.tools)
     
     def _create_tools(self):
         """Create the tools for the assistant"""
@@ -73,76 +72,40 @@ class Assistant:
         
         # Wikipedia tool
         wikipedia = WikipediaQueryRun(api_wrapper=WikipediaAPIWrapper())
-        tools.append(
-            Tool(
-                name="Wikipedia",
-                func=wikipedia.run,
-                description="Useful for looking up factual information on Wikipedia. Input should be a search query."
-            )
-        )
+        tools.append(wikipedia)
         
         # Search tool
         search = DuckDuckGoSearchRun()
-        tools.append(
-            Tool(
-                name="Search",
-                func=search.run,
-                description="Useful for searching the internet for current information. Input should be a search query."
-            )
-        )
+        tools.append(search)
         
         # Time tool
         tools.append(
-            Tool(
-                name="CurrentTime",
+            StructuredTool.from_function(
                 func=get_current_time,
+                name="CurrentTime",
                 description="Useful for getting the current time. No input needed."
             )
         )
         
         # Date tool
         tools.append(
-            Tool(
-                name="CurrentDate",
+            StructuredTool.from_function(
                 func=get_current_date,
+                name="CurrentDate",
                 description="Useful for getting the current date. No input needed."
             )
         )
         
         # Calculator tool
         tools.append(
-            Tool(
-                name="Calculator",
+            StructuredTool.from_function(
                 func=calculate,
+                name="Calculator",
                 description="Useful for performing mathematical calculations. Input should be a mathematical expression like '2+2' or '10*5'."
             )
         )
         
         return tools
-    
-    def _create_agent(self):
-        """Create the LangChain agent"""
-        # Create the prompt template
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", "You are a helpful voice assistant. Be concise and friendly in your responses. "
-                      "You have access to various tools to help answer questions. "
-                      "Use them when needed to provide accurate information."),
-            ("user", "{input}"),
-            MessagesPlaceholder(variable_name="agent_scratchpad"),
-        ])
-        
-        # Create the agent
-        agent = create_openai_tools_agent(self.llm, self.tools, prompt)
-        
-        # Create the agent executor
-        agent_executor = AgentExecutor(
-            agent=agent,
-            tools=self.tools,
-            verbose=True,
-            handle_parsing_errors=True
-        )
-        
-        return agent_executor
     
     def process(self, user_input):
         """
@@ -155,7 +118,20 @@ class Assistant:
             str: The assistant's response
         """
         try:
-            response = self.agent.invoke({"input": user_input})
-            return response["output"]
+            # Invoke the agent with the user input
+            result = self.agent.invoke({
+                "messages": [("user", user_input)]
+            })
+            
+            # Extract the last message from the agent's response
+            if "messages" in result and len(result["messages"]) > 0:
+                last_message = result["messages"][-1]
+                # Get the content from the message
+                if hasattr(last_message, 'content'):
+                    return last_message.content
+                elif isinstance(last_message, dict) and 'content' in last_message:
+                    return last_message['content']
+            
+            return "I'm sorry, I couldn't generate a response."
         except Exception as e:
             return f"I encountered an error: {str(e)}"
