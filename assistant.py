@@ -81,8 +81,8 @@ class Assistant:
         # Time tool
         tools.append(
             StructuredTool.from_function(
-                func=get_current_time,
                 name="CurrentTime",
+                func=get_current_time,
                 description="Useful for getting the current time. No input needed."
             )
         )
@@ -90,8 +90,8 @@ class Assistant:
         # Date tool
         tools.append(
             StructuredTool.from_function(
-                func=get_current_date,
                 name="CurrentDate",
+                func=get_current_date,
                 description="Useful for getting the current date. No input needed."
             )
         )
@@ -99,8 +99,8 @@ class Assistant:
         # Calculator tool
         tools.append(
             StructuredTool.from_function(
-                func=calculate,
                 name="Calculator",
+                func=calculate,
                 description="Useful for performing mathematical calculations. Input should be a mathematical expression like '2+2' or '10*5'."
             )
         )
