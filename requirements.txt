@@ -1,10 +1,31 @@
-opencv-python
-langchain
-langchain-openai
-langchain_google_genai
-langchain-community
-python-dotenv
-pyaudio
-soundfile
-SpeechRecognition
-SpeechRecognition[whisper-local]
+# Core
+python-dotenv>=1.0
+opencv-python>=4.9
+numpy>=2.0
+
+# LangChain (Agent + Tools)
+langchain>=0.2
+langchain-openai>=0.2
+langchain-community>=0.2
+
+# Audio I/O
+pyaudio>=0.2.14
+soundfile>=0.12
+
+# Speech-to-Text (lokales Whisper über SpeechRecognition)
+SpeechRecognition[whisper-local]>=3.10
+openai-whisper>=20231117
+
+# Piper TTS (lokal, kostenlos)
+piper-tts~=1.3
+huggingface_hub>=0.20
+
+# ONNX Runtime (CPU – für Piper, wähle GPU-Variante falls CUDA vorhanden ...oder TensorRT)
+# onnxruntime>=1.20.1; platform_system=="Windows"
+onnxruntime-gpu>=1.20.1; platform_system=="Windows"  # optional: falls NVIDIA GPU
+
+# Web-Suche (DuckDuckGo - neues Package 'ddgs')
+ddgs>=0.1.0
+
+# HTTP-Requests (für eventuelle API-Calls)
+requests>=2.31
