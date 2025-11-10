@@ -3,6 +3,7 @@ import os
 import base64
 import cv2
 import time
+import re
 from collections import deque
 from datetime import datetime
 from typing import Optional
@@ -12,7 +13,7 @@ from dotenv import load_dotenv, find_dotenv
 from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain_openai import ChatOpenAI
-from langchain.agents import AgentExecutor, create_openai_functions_agent  # ← geändert
+from langchain.agents import AgentExecutor, create_tool_calling_agent
 from pyaudio import PyAudio, paInt16
 from speech_recognition import Microphone, Recognizer, UnknownValueError
 
@@ -30,6 +31,12 @@ DISABLE_TTS = os.getenv("DISABLE_TTS", "0") == "1"
 # Mehrsprachigkeit: Default + verfügbare Sprachen
 DEFAULT_LANGUAGE = os.getenv("DEFAULT_LANGUAGE", "ru")  # 'ru' oder 'de'
 CAMERA_INDEX = int(os.getenv("CAMERA_INDEX", "0"))
+
+# Audio devices
+AUDIO_INPUT_DEVICE = os.getenv("AUDIO_INPUT_DEVICE")  # Mikrofon für STT
+AUDIO_INPUT_DEVICE = int(AUDIO_INPUT_DEVICE) if AUDIO_INPUT_DEVICE else None
+AUDIO_OUTPUT_DEVICE = os.getenv("AUDIO_OUTPUT_DEVICE")  # Lautsprecher für TTS
+AUDIO_OUTPUT_DEVICE = int(AUDIO_OUTPUT_DEVICE) if AUDIO_OUTPUT_DEVICE else None
 
 # Language-Konfiguration (Whisper + Response + TTS)
 LANGUAGE_CONFIG = {
@@ -53,6 +60,38 @@ WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")
 
 if not OPENAI_API_KEY:
     raise RuntimeError("OPENAI_API_KEY fehlt (.env prüfen)")
+
+# ----- Helper Functions -----
+def clean_markdown_for_tts(text: str) -> str:
+    """
+    Entfernt Markdown-Formatierung für TTS-Ausgabe.
+
+    Konvertiert:
+    - **bold** -> bold
+    - *italic* -> italic
+    - [link](url) -> link
+    - # Heading -> Heading
+    - etc.
+    """
+    # Bold und Italic (**, *, __, _)
+    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)
+    text = re.sub(r'\*([^*]+)\*', r'\1', text)
+    text = re.sub(r'__([^_]+)__', r'\1', text)
+    text = re.sub(r'_([^_]+)_', r'\1', text)
+
+    # Links [text](url) -> text
+    text = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', text)
+
+    # Headers (# ## ###)
+    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+
+    # Code blocks (`)
+    text = re.sub(r'`([^`]+)`', r'\1', text)
+
+    # Strikethrough (~~)
+    text = re.sub(r'~~([^~]+)~~', r'\1', text)
+
+    return text
 
 # ----- LLM Setup -----
 client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
@@ -142,16 +181,27 @@ class Assistant:
 
     def __init__(self, model):
         self.agent_executor = None
+        self.agent_executor_vision = None  # Separate agent for vision queries
         self.model = model
         self._piper = {}  # Dict für mehrere Piper-Modelle (pro Sprache)
         self.history = ChatMessageHistory()
         self.request_times: deque = deque(maxlen=self.MAX_REQUESTS_PER_MINUTE)
+        self.stop_tts = False  # Flag to interrupt TTS playback
+        self.tts_thread = None  # Thread for TTS playback
         self._update_agent()  # Initial Agent erstellen
+
+    def interrupt_tts(self):
+        """Stoppt die aktuelle TTS-Wiedergabe."""
+        if self.tts_thread and self.tts_thread.is_alive():
+            print("[TTS] Unterbrochen durch Benutzer")
+            self.stop_tts = True
+            # Wait for thread to finish
+            self.tts_thread.join(timeout=1.0)
 
     def set_language(self, lang_code: str):
         """
         Ändert die aktuelle Sprache (Whisper + Response + TTS).
-        
+
         Args:
             lang_code: 'ru' oder 'de'
         """
@@ -159,14 +209,15 @@ class Assistant:
         if lang_code not in LANGUAGE_CONFIG:
             print(f"[ERROR] Unbekannte Sprache: {lang_code}")
             return
-        
+
         CURRENT_LANGUAGE = lang_code
         self._update_agent()  # Agent mit neuer Sprache neu erstellen
         print(f"[Language] Gewechselt zu: {LANGUAGE_CONFIG[lang_code]['display_name']}")
 
     def _update_agent(self):
         """Erstellt Agent mit aktueller Sprachkonfiguration neu."""
-        self.agent_executor = self._create_agent(self.model)
+        self.agent_executor = self._create_agent(self.model, vision=False)
+        self.agent_executor_vision = self._create_agent(self.model, vision=True)
 
     def _check_rate_limit(self) -> bool:
         """Check if request is within rate limit"""
@@ -213,6 +264,38 @@ class Assistant:
 
         return sanitized
 
+    def _is_vision_query(self, prompt: str) -> bool:
+        """
+        Check if the user query is asking about what's visible in the camera.
+
+        Args:
+            prompt: User input text
+
+        Returns:
+            True if query is vision-related, False otherwise
+        """
+        prompt_lower = prompt.lower()
+
+        # Vision keywords in different languages
+        vision_keywords = [
+            # English
+            'what do you see', 'what can you see', 'describe what', 'what is visible',
+            'what\'s in the image', 'what\'s on the image', 'describe the image',
+            'what am i', 'who am i', 'what are you looking at', 'look at',
+
+            # German
+            'was siehst du', 'was kannst du sehen', 'beschreibe was', 'was ist sichtbar',
+            'was ist auf dem bild', 'beschreibe das bild', 'was bin ich', 'wer bin ich',
+            'schau dir', 'sieh dir',
+
+            # Russian
+            'что ты видишь', 'что видишь', 'что ты можешь видеть', 'опиши что',
+            'что видно', 'что на изображении', 'опиши изображение', 'что я',
+            'кто я', 'посмотри на', 'видно на картинке'
+        ]
+
+        return any(keyword in prompt_lower for keyword in vision_keywords)
+
     def answer(self, prompt: str, image_base64: str):
         """
         Verarbeitet User-Prompt und antwortet mit TTS.
@@ -234,12 +317,24 @@ class Assistant:
 
         print(f"[User] {sanitized_prompt}")
 
+        # Check if this is a vision query
+        is_vision = self._is_vision_query(sanitized_prompt)
+        if is_vision:
+            print("[Vision] Query detected - using vision-enabled agent")
+
         try:
-            response = self.agent_executor.invoke({
-                "input": sanitized_prompt,
-                "image_base64": image_base64,
-                "chat_history": self.history.messages,
-            })
+            # Use appropriate agent based on query type
+            if is_vision:
+                response = self.agent_executor_vision.invoke({
+                    "input": sanitized_prompt,
+                    "image_base64": image_base64,
+                    "chat_history": self.history.messages,
+                })
+            else:
+                response = self.agent_executor.invoke({
+                    "input": sanitized_prompt,
+                    "chat_history": self.history.messages,
+                })
 
             answer = response.get("output", "").strip()
             if not answer:
@@ -260,20 +355,32 @@ class Assistant:
             traceback.print_exc()
 
     def _tts(self, text: str):
-        """Text-to-Speech mit Piper (GPU-beschleunigt)."""
+        """Text-to-Speech mit Piper (GPU-beschleunigt) in separatem Thread."""
         if DISABLE_TTS or not text:
             return
-        self._tts_piper(text)
+
+        # Stop any currently running TTS
+        if self.tts_thread and self.tts_thread.is_alive():
+            self.stop_tts = True
+            self.tts_thread.join(timeout=1.0)
+
+        # Reset flag and start new TTS thread
+        self.stop_tts = False
+        self.tts_thread = Thread(target=self._tts_piper, args=(text,), daemon=True)
+        self.tts_thread.start()
 
     def _tts_piper(self, text: str):
         """Piper TTS Synthese und Wiedergabe."""
+        # Entferne Markdown-Formatierung für bessere TTS-Ausgabe
+        text = clean_markdown_for_tts(text)
+
         lang_config = LANGUAGE_CONFIG[CURRENT_LANGUAGE]
         piper_model_path = lang_config["piper_model"]
-        
+
         if not piper_model_path:
             print(f"[TTS] Kein Piper-Model für {CURRENT_LANGUAGE} konfiguriert.")
             return
-        
+
         try:
             import piper
             
@@ -302,52 +409,93 @@ class Assistant:
                 return
             
             print(f"[TTS] Audio: {len(audio_bytes)} bytes, {sample_rate} Hz")
-            
-            # Wiedergabe via PyAudio
+
+            # Wiedergabe via PyAudio in Chunks (ermöglicht Unterbrechung)
             p = PyAudio()
-            stream = p.open(
-                format=paInt16,
-                channels=1,
-                rate=sample_rate,
-                output=True,
-                output_device_index=3  # TODO: aus .env laden
-            )
-            stream.write(audio_bytes)
-            stream.stop_stream()
-            stream.close()
-            p.terminate()
-            
+            stream = None
+            try:
+                # Audio-Ausgabegerät: Falls konfiguriert verwenden, sonst System-Standard
+                stream_kwargs = {
+                    "format": paInt16,
+                    "channels": 1,
+                    "rate": sample_rate,
+                    "output": True
+                }
+                if AUDIO_OUTPUT_DEVICE is not None:
+                    stream_kwargs["output_device_index"] = AUDIO_OUTPUT_DEVICE
+
+                stream = p.open(**stream_kwargs)
+
+                # Play audio in chunks to allow interruption
+                chunk_size = 4096  # Bytes per chunk
+                for i in range(0, len(audio_bytes), chunk_size):
+                    if self.stop_tts:
+                        print("[TTS] Wiedergabe gestoppt")
+                        break
+                    chunk = audio_bytes[i:i + chunk_size]
+                    stream.write(chunk)
+
+            finally:
+                # Clean up resources
+                if stream:
+                    stream.stop_stream()
+                    stream.close()
+                p.terminate()
+
         except Exception as e:
             print(f"[TTS] Fehler: {e}")
 
-    def _create_agent(self, model):
-        """Erstellt Function-Calling-Agent mit Tools + Vision."""
+    def _create_agent(self, model, vision: bool = False):
+        """
+        Erstellt Function-Calling-Agent mit Tools (optional mit Vision).
+
+        Args:
+            model: LLM model to use
+            vision: If True, includes webcam image in prompt
+        """
         today = datetime.now().strftime("%d.%m.%Y %H:%M")
         lang_config = LANGUAGE_CONFIG[CURRENT_LANGUAGE]
         response_lang = lang_config["response_lang"]
-        
-        system_message = f"""You are a helpful assistant. Answer all questions in {response_lang}.
+
+        if vision:
+            system_message = f"""You are a helpful assistant. Answer all questions in {response_lang}.
 
 **IMPORTANT CONTEXT:**
 - TODAY'S DATE AND TIME: {today}
 - Your training data is outdated (cutoff 2023). For current events, news, or time-sensitive information, you MUST use tools.
 - When searching for news, ALWAYS include the current year (2025) or month in your search query.
-- You have access to a webcam image in every message. Use it to provide context-aware answers when the user asks "What do you see?" or similar questions.
+- You have access to a webcam image. Describe what you see in the image based on the user's question.
 
 Use the available tools when needed."""
 
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", system_message),
-            MessagesPlaceholder(variable_name="chat_history"),
-            ("human", [
-                {"type": "text", "text": "{input}"},
-                {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,{image_base64}"}},
-            ]),
-            MessagesPlaceholder(variable_name="agent_scratchpad"),
-        ])
-        
-        agent = create_openai_functions_agent(llm=model, tools=DEFAULT_TOOLS, prompt=prompt)
-        
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", system_message),
+                MessagesPlaceholder(variable_name="chat_history"),
+                ("human", [
+                    {"type": "text", "text": "{input}"},
+                    {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,{image_base64}"}},
+                ]),
+                MessagesPlaceholder(variable_name="agent_scratchpad"),
+            ])
+        else:
+            system_message = f"""You are a helpful assistant. Answer all questions in {response_lang}.
+
+**IMPORTANT CONTEXT:**
+- TODAY'S DATE AND TIME: {today}
+- Your training data is outdated (cutoff 2023). For current events, news, or time-sensitive information, you MUST use tools.
+- When searching for news, ALWAYS include the current year (2025) or month in your search query.
+
+Use the available tools when needed."""
+
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", system_message),
+                MessagesPlaceholder(variable_name="chat_history"),
+                ("human", "{input}"),
+                MessagesPlaceholder(variable_name="agent_scratchpad"),
+            ])
+
+        agent = create_tool_calling_agent(llm=model, tools=DEFAULT_TOOLS, prompt=prompt)
+
         return AgentExecutor(
             agent=agent,
             tools=DEFAULT_TOOLS,
@@ -364,12 +512,28 @@ def main():
     
     # Whisper STT Setup
     recognizer = Recognizer()
-    microphone = Microphone()
-    
+
+    # Mikrofon mit explizitem Device-Index (falls konfiguriert)
+    if AUDIO_INPUT_DEVICE is not None:
+        print(f"[STT] Verwende Mikrofon-Gerät: Index {AUDIO_INPUT_DEVICE}")
+        microphone = Microphone(device_index=AUDIO_INPUT_DEVICE)
+    else:
+        print("[STT] Verwende Standard-Mikrofon")
+        microphone = Microphone()
+
     with microphone as source:
         print("[STT] Kalibriere Mikrofon...")
-        recognizer.adjust_for_ambient_noise(source)
+        recognizer.adjust_for_ambient_noise(source, duration=2)
+        print(f"[STT] Energy Threshold nach Kalibrierung: {recognizer.energy_threshold}")
+
+        # Setze einen höheren Mindest-Threshold, um Hintergrundgeräusche zu vermeiden
+        if recognizer.energy_threshold < 300:
+            print(f"[STT] WARNUNG: Energy Threshold sehr niedrig ({recognizer.energy_threshold})")
+            print("[STT] Erhöhe auf Minimum 300 um Hintergrundgeräusche zu vermeiden")
+            recognizer.energy_threshold = 300
+
         print(f"[STT] Bereit! Aktuelle Sprache: {LANGUAGE_CONFIG[CURRENT_LANGUAGE]['display_name']}")
+        print(f"[STT] Energy Threshold: {recognizer.energy_threshold}")
     
     def audio_callback(recognizer, audio):
         """Background-Callback für Whisper STT."""
@@ -392,6 +556,7 @@ def main():
         print("[Main] Hotkeys:")
         print("  [1] = Russian")
         print("  [2] = Deutsch")
+        print("  [SPACE] = TTS stoppen")
         print("  [q/ESC] = Beenden")
         
         while True:
@@ -409,10 +574,11 @@ def main():
             hotkeys = [
                 "[1] Russian",
                 "[2] Deutsch",
+                "[SPACE] Stop TTS",
                 "[q] Exit"
             ]
             
-            y_offset = frame.shape[0] - 80  # 80px vom unteren Rand
+            y_offset = frame.shape[0] - 105  # 105px vom unteren Rand (mehr Platz für 4 Zeilen)
             for i, line in enumerate(hotkeys):
                 y_pos = y_offset + (i * 25)  # 25px Zeilenabstand
                 cv2.putText(frame, line, (10, y_pos), 
@@ -427,6 +593,8 @@ def main():
                 assistant.set_language("ru")
             elif key == ord("2"):  # Deutsch
                 assistant.set_language("de")
+            elif key == ord(" "):  # Leertaste - TTS stoppen
+                assistant.interrupt_tts()
                 
     except KeyboardInterrupt:
         print("\n[Main] Beendet (Ctrl+C).")
