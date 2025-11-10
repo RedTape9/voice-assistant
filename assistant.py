@@ -2,7 +2,10 @@ from threading import Lock, Thread
 import os
 import base64
 import cv2
+import time
+from collections import deque
 from datetime import datetime
+from typing import Optional
 from openai import OpenAI
 from cv2 import VideoCapture, imencode
 from dotenv import load_dotenv, find_dotenv
@@ -132,12 +135,17 @@ class WebcamStream:
 # ----- Assistant (Agent mit Tools + Vision) -----
 class Assistant:
     """Voice-Assistant mit LLM-Agent, Tools, TTS und Chat-History."""
-    
+
+    # Rate limiting settings
+    MAX_REQUESTS_PER_MINUTE = 10
+    MAX_INPUT_LENGTH = 500
+
     def __init__(self, model):
         self.agent_executor = None
         self.model = model
         self._piper = {}  # Dict für mehrere Piper-Modelle (pro Sprache)
         self.history = ChatMessageHistory()
+        self.request_times: deque = deque(maxlen=self.MAX_REQUESTS_PER_MINUTE)
         self._update_agent()  # Initial Agent erstellen
 
     def set_language(self, lang_code: str):
@@ -160,34 +168,87 @@ class Assistant:
         """Erstellt Agent mit aktueller Sprachkonfiguration neu."""
         self.agent_executor = self._create_agent(self.model)
 
+    def _check_rate_limit(self) -> bool:
+        """Check if request is within rate limit"""
+        current_time = time.time()
+        # Remove requests older than 60 seconds
+        while self.request_times and current_time - self.request_times[0] > 60:
+            self.request_times.popleft()
+
+        # Check if we've exceeded the rate limit
+        if len(self.request_times) >= self.MAX_REQUESTS_PER_MINUTE:
+            return False
+
+        # Add current request
+        self.request_times.append(current_time)
+        return True
+
+    def _sanitize_input(self, user_input: str) -> Optional[str]:
+        """
+        Sanitize user input
+
+        Args:
+            user_input: Raw user input
+
+        Returns:
+            Sanitized input or None if invalid
+        """
+        # Strip whitespace
+        sanitized = user_input.strip()
+
+        # Check for empty input
+        if not sanitized or len(sanitized) < 3:
+            return None
+
+        # Check length
+        if len(sanitized) > self.MAX_INPUT_LENGTH:
+            print(f"[WARNING] Input zu lang ({len(sanitized)} chars), gekürzt auf {self.MAX_INPUT_LENGTH}")
+            sanitized = sanitized[:self.MAX_INPUT_LENGTH]
+
+        # Remove any control characters except newlines and tabs
+        sanitized = ''.join(
+            char for char in sanitized
+            if char.isprintable() or char in '\n\t'
+        )
+
+        return sanitized
+
     def answer(self, prompt: str, image_base64: str):
         """
         Verarbeitet User-Prompt und antwortet mit TTS.
-        
+
         Args:
             prompt: User-Frage (von Whisper erkannt)
             image_base64: Base64-encodiertes Webcam-Bild
         """
-        if not prompt or len(prompt.strip()) < 3:
+        # Rate limiting check
+        if not self._check_rate_limit():
+            print("[WARNING] Rate limit erreicht, bitte warten...")
+            self._tts("Bitte langsamer sprechen, zu viele Anfragen.")
             return
-        
-        print(f"[User] {prompt}")
-        
+
+        # Sanitize input
+        sanitized_prompt = self._sanitize_input(prompt)
+        if not sanitized_prompt:
+            return
+
+        print(f"[User] {sanitized_prompt}")
+
         try:
             response = self.agent_executor.invoke({
-                "input": prompt,
+                "input": sanitized_prompt,
                 "image_base64": image_base64,
                 "chat_history": self.history.messages,
             })
-            
+
             answer = response.get("output", "").strip()
             if not answer:
                 return
-            
+
             print(f"[Assistant] {answer}")
-            
+
             # Update Chat-History
-            self.history.add_user_message(prompt)
+            self.history.add_user_message(sanitized_prompt)
             self.history.add_ai_message(answer)
             
             # TTS-Ausgabe

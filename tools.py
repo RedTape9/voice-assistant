@@ -1,5 +1,7 @@
 """Wiederverwendbare LangChain Tools für Web-Suche, Wetter, Zeit und Rechner."""
 import requests
+import ast
+import operator
 from datetime import datetime
 from langchain.tools import Tool
 
@@ -36,16 +38,53 @@ def time_tool(dummy: str = "") -> str:
 
 
 def calc_tool(expr: str) -> str:
-    """Berechnet mathematische Ausdrücke (sicher via restricted eval)."""
+    """Berechnet mathematische Ausdrücke sicher via AST-Parsing."""
+    # Define safe operations
+    safe_operators = {
+        ast.Add: operator.add,
+        ast.Sub: operator.sub,
+        ast.Mult: operator.mul,
+        ast.Div: operator.truediv,
+        ast.Mod: operator.mod,
+        ast.Pow: operator.pow,
+        ast.UAdd: operator.pos,
+        ast.USub: operator.neg,
+    }
+
+    def _eval_node(node):
+        """Recursively evaluate AST nodes"""
+        if isinstance(node, ast.Constant):
+            return node.value
+        elif isinstance(node, ast.BinOp):
+            left = _eval_node(node.left)
+            right = _eval_node(node.right)
+            op_type = type(node.op)
+            if op_type not in safe_operators:
+                raise ValueError(f"Unsupported operation: {op_type.__name__}")
+            return safe_operators[op_type](left, right)
+        elif isinstance(node, ast.UnaryOp):
+            operand = _eval_node(node.operand)
+            op_type = type(node.op)
+            if op_type not in safe_operators:
+                raise ValueError(f"Unsupported operation: {op_type.__name__}")
+            return safe_operators[op_type](operand)
+        else:
+            raise ValueError(f"Unsupported expression type: {type(node).__name__}")
+
     try:
-        # Sicherheitscheck: nur Zahlen, Operatoren, Klammern erlaubt
-        allowed = set("0123456789+-*/().% ")
-        if not all(c in allowed for c in expr):
-            return "Ungültiger Ausdruck (nur Zahlen und Operatoren erlaubt)"
-        result = eval(expr, {"__builtins__": {}}, {})
+        # Parse the expression into an AST
+        tree = ast.parse(expr, mode='eval')
+        # Evaluate the AST safely
+        result = _eval_node(tree.body)
         return str(result)
+    except SyntaxError:
+        return "Fehler: Ungültige mathematische Syntax"
+    except ZeroDivisionError:
+        return "Fehler: Division durch Null"
+    except ValueError as e:
+        return f"Fehler: {str(e)}"
     except Exception as e:
-        return f"Rechenfehler: {e}"
+        return f"Rechenfehler: {str(e)}"
 
 
 # Vordefinierte Tool-Liste (exportiert)
