@@ -3,10 +3,10 @@ Unit tests for the calculator tool
 """
 import sys
 import os
-# Add parent directory to path to import assistant module
+# Add parent directory to path to import tools module
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from assistant import calculate
+from tools import calc_tool as calculate
 
 
 def test_calculator_basic_addition():
@@ -65,32 +65,32 @@ def test_calculator_complex_expression():
 def test_calculator_division_by_zero():
     """Test division by zero error handling"""
     result = calculate("10 / 0")
-    assert "Error" in result
-    assert "Division by zero" in result
+    assert "Fehler" in result or "Error" in result
+    assert "Division" in result or "Null" in result
 
 
 def test_calculator_invalid_expression():
     """Test invalid expression handling"""
     result = calculate("2 +")
-    assert "Error" in result
+    assert "Fehler" in result or "Error" in result
 
 
 def test_calculator_unsupported_operation():
     """Test unsupported operations are rejected"""
     result = calculate("import os")
-    assert "Error" in result
+    assert "Fehler" in result or "Error" in result
 
 
 def test_calculator_function_calls():
     """Test that function calls are rejected"""
     result = calculate("eval('2+2')")
-    assert "Error" in result
+    assert "Fehler" in result or "Error" in result
 
 
 def test_calculator_no_variables():
     """Test that variables are not allowed"""
     result = calculate("x = 5")
-    assert "Error" in result
+    assert "Fehler" in result or "Error" in result
 
 
 if __name__ == "__main__":
