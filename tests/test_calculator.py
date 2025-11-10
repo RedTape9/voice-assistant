@@ -118,13 +118,13 @@ if __name__ == "__main__":
     for test_func in test_functions:
         try:
             test_func()
-            print(f"✓ {test_func.__name__}")
+            print(f"PASS {test_func.__name__}")
             passed += 1
         except AssertionError as e:
-            print(f"✗ {test_func.__name__}: {e}")
+            print(f"FAIL {test_func.__name__}: {e}")
             failed += 1
         except Exception as e:
-            print(f"✗ {test_func.__name__}: Unexpected error - {e}")
+            print(f"FAIL {test_func.__name__}: Unexpected error - {e}")
             failed += 1
 
     print(f"\n{passed} passed, {failed} failed")

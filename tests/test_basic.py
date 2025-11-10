@@ -3,7 +3,15 @@ Simple test to verify the assistant's core functionality
 This test doesn't require microphone or speech recognition
 """
 import os
+import sys
 from dotenv import load_dotenv
+
+# Ensure UTF-8 encoding for Windows console
+if sys.platform == 'win32':
+    sys.stdout.reconfigure(encoding='utf-8')
+
+# Add parent directory to path to import modules
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 # Load environment variables
 load_dotenv()
