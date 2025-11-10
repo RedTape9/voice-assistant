@@ -25,7 +25,7 @@ huggingface_hub>=0.20,<1.0
 onnxruntime-gpu>=1.20.1,<2.0; platform_system=="Windows"  # optional: falls NVIDIA GPU
 
 # Web-Suche (DuckDuckGo - neues Package 'ddgs')
-ddgs>=0.1.0,<1.0
+ddgs>=9.0.0,<10.0
 
 # HTTP-Requests (für eventuelle API-Calls)
 requests>=2.31,<3.0
