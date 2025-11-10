@@ -24,6 +24,8 @@ wheels/
 venv/
 ENV/
 env/
+.venv/
+.venv311/
 
 # IDE
 .vscode/
@@ -31,6 +33,7 @@ env/
 *.swp
 *.swo
 *~
+.claude/settings.local.json
 
 # OS
 .DS_Store
@@ -42,3 +45,6 @@ Thumbs.db
 # Audio files
 *.wav
 *.mp3
+
+# Models
+models/
