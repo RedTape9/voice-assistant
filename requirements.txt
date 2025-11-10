@@ -1,21 +1,26 @@
 # Voice Assistant Requirements
 
 # LangChain and AI
-langchain>=0.1.0
-langchain-openai>=0.0.2
-langchain-community>=0.0.10
+langchain>=0.1.0,<0.4.0
+langchain-openai>=0.0.2,<0.3.0
+langchain-community>=0.0.10,<0.3.0
+langgraph>=0.0.40,<0.3.0
 
 # Speech Recognition
-SpeechRecognition>=3.10.0
-pyaudio>=0.2.13
+SpeechRecognition>=3.10.0,<4.0.0
+pyaudio>=0.2.13,<0.3.0
 
 # Text to Speech
-pyttsx3>=2.90
+pyttsx3>=2.90,<3.0.0
 
 # Tools
-wikipedia>=1.4.0
-requests>=2.31.0
-duckduckgo-search>=3.9.0
+wikipedia>=1.4.0,<2.0.0
+requests>=2.31.0,<3.0.0
+duckduckgo-search>=3.9.0,<7.0.0
 
 # Environment
-python-dotenv>=1.0.0
+python-dotenv>=1.0.0,<2.0.0
+
+# Testing (optional, for development)
+pytest>=7.0.0,<9.0.0; extra == "dev"
+pytest-cov>=4.0.0,<6.0.0; extra == "dev"
